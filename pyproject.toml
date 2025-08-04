@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "lookoutcv"
+version = "0.1.0"
+description = ""
+authors = ["kavin <kavinkr10@gmail.com>"]
+readme = "README.md"
+packages = [
+    { include = "detection" },
+    { include = "metrics" },
+
+]
+
+[tool.poetry.dependencies]
+python = ">=3.13"
+pillow = ">=11.3.0,<12.0.0"
+numpy = "==2.2.0"
+pyarrow = ">=21.0.0,<22.0.0"
+opencv-python = ">=4.12.0.88,<5.0.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.1"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
