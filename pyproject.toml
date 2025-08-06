@@ -16,6 +16,8 @@ pillow = ">=11.3.0,<12.0.0"
 numpy = "==2.2.0"
 pyarrow = ">=21.0.0,<22.0.0"
 opencv-python = ">=4.12.0.88,<5.0.0.0"
+pandas = "^2.3.1"
+tabulate = "^0.9.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.1"
