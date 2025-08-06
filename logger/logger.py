@@ -1,13 +1,17 @@
 import os
 import logging
-import numpy as np
+from enum import Enum, auto
 from typing import List, Optional, Dict, Any, Union
+
+
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-from enum import Enum, auto
-from functools import lru_cache
 
-logger = logging.getLogger(__name__)
+
+from metrics.metrics import ImageMetricsCalculator
+
+
 
 
 class CVMetrics(Enum):
@@ -89,14 +93,9 @@ class BaseLogger:
         missing_cols = expected_cols - existing_cols
         if missing_cols:
             print(f"🔄 Schema evolution: Adding columns {missing_cols}")
-            try:
-                from detection.detection_logger import DetectionLogger
-                expected_types = DetectionLogger.expected_types
-            except Exception:
-                expected_types = {}
+
             for col in missing_cols:
-                col_type = expected_types.get(col, pa.float32())  # default to float32 if unknown
-                col_array = pa.array([None] * existing_table.num_rows, type=col_type)
+                col_array = pa.array([None] * existing_table.num_rows, type= pa.float32())
                 existing_table = existing_table.append_column(col, col_array)
 
                 print(f"Updated schema: {existing_table.schema.names}")
@@ -113,7 +112,6 @@ class BaseLogger:
         Returns:
             Dictionary mapping metric names to their computed values
         """
-        from metrics.metrics import ImageMetricsCalculator
         results = {}
         if image is None or not self.enabled_metrics:
             for field in self.enabled_metrics:
@@ -165,7 +163,6 @@ class BaseLogger:
         try:
             self.save_to_parquet(data)
         except Exception as e:
-            logger.error(f"Failed to save prediction: {e}")
             raise
 
     def save_to_parquet(self, data: Dict[str, Any]) -> None:
@@ -182,7 +179,6 @@ class BaseLogger:
             schema = existing_table.schema
             row = [data.get(name, None) for name in schema.names]
         except Exception as e:
-            logger.error(f"Failed to read parquet file: {e}")
             raise IOError(f"Failed to read parquet file: {e}") from e
 
 

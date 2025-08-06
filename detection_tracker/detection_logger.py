@@ -2,6 +2,7 @@ from enum import Enum, auto
 from typing import List, Optional, Union
 import os
 import numpy as np
+import pyarrow as pa
 
 from logger.logger import BaseLogger
 
@@ -12,20 +13,7 @@ from logger.logger import CVMetrics
 class DetectionLogger(BaseLogger):
     # expected_types: mapping of all possible fields to pa.float32
     # This is used by BaseLogger for schema evolution
-    import pyarrow as pa
-    expected_types = {
-        "image_name": pa.float32(),
-        "pred_class": pa.float32(),
-        "confidence": pa.float32(),
-        "bbox_x1": pa.float32(),
-        "bbox_y1": pa.float32(),
-        "bbox_x2": pa.float32(),
-        "bbox_y2": pa.float32(),
-        CVMetrics.CONTRAST.value: pa.float32(),
-        CVMetrics.BLUR.value: pa.float32(),
-        CVMetrics.ORIENTATION.value: pa.float32(),
-        CVMetrics.BBOX_RATIO.value: pa.float32(),
-    }
+
     _MANDATORY_FIELDS = [
         "image_name", "pred_class", "confidence",
         "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2"]

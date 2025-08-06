@@ -4,11 +4,11 @@ import numpy as np
 from PIL import Image
 
 
-from detection.detection_logger import DetectionLogger, CVMetrics
+from detection_tracker.detection_logger import DetectionLogger, CVMetrics
 class TestDetectionLogger(unittest.TestCase):
     def setUp(self):
         self.model_name = "test_detection"
-        self.image_path = r'C:\Kavins_stuff\learning\LookOutCV\samples\batMan.jpg'
+        self.image_path = r'samples\batMan.jpg'
         self.image = Image.open(self.image_path)
         self.np_image = np.array(self.image)
 
