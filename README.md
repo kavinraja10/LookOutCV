@@ -36,7 +36,7 @@ logger.log_prediction(
     image_name="image1.jpg",
     bbox_x1=100, bbox_y1=200, bbox_x2=300, bbox_y2=400
 )
-
+```
 ### Classification
 
 ```python
@@ -70,17 +70,10 @@ lookout_cv_logs/
 yet to add
 ```
 
-## TODO
+ 
 
-Priority tasks:
-- [ ] Add visualization tools for metrics analysis
-- [ ] Implement basic drift detection
-- [ ] Add data retention management
-- [ ] Create example notebooks
-
-Later plans:
+## Later plans:
 - [ ] Support for semantic segmentation models
 - [ ] Distributed logging capabilities
 - [ ] Real-time monitoring dashboard
-- [ ] Advanced drift detection algorithms
 - [ ] Automated alerting system
