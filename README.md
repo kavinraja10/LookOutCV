@@ -2,7 +2,8 @@
 
 Keep an eye on your computer vision models in production 👁️  
 
-I built LookOutCV because monitoring CV models in production is often an afterthought. We usually deploy models and only notice issues once accuracy drops or customers complain. This tool makes it easier to **log predictions, track image quality, and catch data/model drift early** without adding complex monitoring infrastructure.
+Monitoring CV models in production is often an afterthought. We usually deploy models and only notice issues once accuracy drops or customers complain. 
+LookOutCV makes it easier to **log predictions, track image quality, and catch data/model drift early** without adding complex monitoring infrastructure.
 
 
 ---
@@ -22,7 +23,8 @@ I built LookOutCV because monitoring CV models in production is often an afterth
 ### Object Detection  
 
 ```python
-from detection.detection_logger import DetectionLogger, CVMetrics
+from look_out_cv.detection_tracker.detection_logger import DetectionLogger
+from look_out_cv.common import CVMetrics
 
 logger = DetectionLogger(
     model_name="my_detection_model",
@@ -40,7 +42,8 @@ logger.log_prediction(
 ### Classification
 
 ```python
-from classification.classification_logger import ClassificationLogger, CVMetrics
+from look_out_cv.classification_tracker.classification_logger import ClassificationLogger
+from look_out_cv.common import CVMetrics
 
 logger = ClassificationLogger(
     model_name="my_classifier",

@@ -4,7 +4,8 @@ import numpy as np
 from PIL import Image
 
 
-from detection_tracker.detection_logger import DetectionLogger, CVMetrics
+from look_out_cv.detection_tracker.detection_logger import DetectionLogger
+from look_out_cv.metrics_types import CVMetrics
 class TestDetectionLogger(unittest.TestCase):
     def setUp(self):
         self.model_name = "test_detection"

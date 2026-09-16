@@ -1,10 +1,15 @@
-
 import numpy as np
 from PIL import Image
 import cv2
 from typing import Union
 from enum import Enum, auto
+from look_out_cv.metrics_types import CVMetrics
 
+tracking_fields_RGB = {
+        CVMetrics.CONTRAST: "image",
+        CVMetrics.BLUR: "image",
+        CVMetrics.ORIENTATION: "image",
+    }
 
 
 class Additional_Fields(Enum):

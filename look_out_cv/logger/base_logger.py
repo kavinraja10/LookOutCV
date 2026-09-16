@@ -1,6 +1,4 @@
 import os
-import logging
-from enum import Enum, auto
 from typing import List, Optional, Dict, Any, Union
 
 
@@ -9,24 +7,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-from metrics.metrics import ImageMetricsCalculator
-
-
-
-
-class CVMetrics(Enum):
-    def _generate_next_value_(name, start, count, last_values):
-        return name.lower()
-
-    CONTRAST = auto()
-    BLUR = auto()
-    ORIENTATION = auto()
-    BBOX_RATIO = auto()
-
-    @property
-    def requires_image(self) -> bool:
-        """Check if the metric requires an image input."""
-        return self in {self.CONTRAST, self.BLUR, self.ORIENTATION}
+from look_out_cv.metrics.metrics import ImageMetricsCalculator
+from look_out_cv.metrics_types import CVMetrics
 
 
 class BaseLogger:
@@ -47,12 +29,12 @@ class BaseLogger:
         self.enabled_metrics = enabled_metrics or []
         self.logs_dir = logs_dir
 
-        os.makedirs(self.logs_dir, exist_ok=True)
+        # os.makedirs(self.logs_dir, exist_ok=True)
         os.makedirs(os.path.join(self.logs_dir, self.model_name), exist_ok=True)
         self.parquet_file = os.path.join(
             self.logs_dir,
             self.model_name,
-            f"{self.model_name}_logs_{os.getpid()}.parquet",
+            f"{self.model_name}_logs.parquet",
         )
 
         if not os.path.exists(self.parquet_file):
