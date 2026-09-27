@@ -1,56 +1,53 @@
+from pathlib import Path
+from typing import Union
+
+import cv2
 import numpy as np
 from PIL import Image
-import cv2
-from typing import Union
-from enum import Enum, auto
+
 from look_out_cv.metrics_types import CVMetrics
 
-tracking_fields_RGB = {
-        CVMetrics.CONTRAST: "image",
-        CVMetrics.BLUR: "image",
-        CVMetrics.ORIENTATION: "image",
-    }
+
+_METRIC_METHOD_NAMES = {
+    CVMetrics.ORIENTATION: "calculate_orientation_type",
+}
 
 
-class Additional_Fields(Enum):
-    def _generate_next_value_(name, start, count, last_values):
-        return name.lower()
-
-    CONTRAST = auto()
-    BLUR = auto()
-    ORIENTATION = auto()
-    BRIGHTNESS = auto()
-
+def resolve_metric_method_name(metric: CVMetrics) -> str:
+    return _METRIC_METHOD_NAMES.get(metric, f"calculate_{metric.value}")
 
 
 class ImageMetricsCalculator:
-    def __init__(self, image: Union[Image.Image, np.ndarray]):
-        self.image = None
-        self._set_image(image)
+    def __init__(self, image: Union[Image.Image, np.ndarray, str, Path]):
+        self.image = self._prepare_image(image)
 
-    def _set_image(self, image: Union[Image.Image, np.ndarray]):
+    @staticmethod
+    def _prepare_image(image: Union[Image.Image, np.ndarray, str, Path]):
         if isinstance(image, Image.Image):
-            self.image = np.array(image)
-        elif isinstance(image, np.ndarray):
-            if image.ndim == 2:
-                self.image = image[:, :, np.newaxis]
-            else:
-                self.image = image
-        elif isinstance(image, str):
-            self.image = np.array(Image.open(image))
+            return np.asarray(image)
+
+        if isinstance(image, np.ndarray):
+            return image[:, :, None] if image.ndim == 2 else image
+
+        if isinstance(image, (str, Path)):
+            return np.asarray(Image.open(image))
+
+        raise TypeError(f"Unsupported image type: {type(image)!r}")
 
     def calculate_contrast(self) -> float:
         return float(np.std(self.image))
 
     def calculate_blur(self) -> float:
-        gray = cv2.cvtColor(self.image, cv2.COLOR_RGB2GRAY) if len(self.image.shape) == 3 else self.image
+        gray = self.image
+        if self.image.ndim == 3:
+            gray = cv2.cvtColor(self.image, cv2.COLOR_RGB2GRAY)
         return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
     def calculate_orientation_type(self) -> float:
-        h, w = self.image.shape[:2]
-        if h > w:
+        height, width = self.image.shape[:2]
+        if height > width:
             return 0.0
-        elif w > h:
+        if width > height:
             return 1.0
         return 0.5
 

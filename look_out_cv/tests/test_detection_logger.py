@@ -1,11 +1,16 @@
-import unittest
 import os
+import shutil
+import unittest
+
 import numpy as np
+import pandas as pd
 from PIL import Image
 
-
+from look_out_cv import DataCollectionLogger
 from look_out_cv.detection_tracker.detection_logger import DetectionLogger
 from look_out_cv.metrics_types import CVMetrics
+
+
 class TestDetectionLogger(unittest.TestCase):
     def setUp(self):
         self.model_name = "test_detection"
@@ -43,9 +48,50 @@ class TestDetectionLogger(unittest.TestCase):
             confidence=0.99,
             image_name="test_image.jpg",
             bbox_x1=5, bbox_y1=10, bbox_x2=50, bbox_y2=60,
-          
         )
         self.assertIsNone(result)
+
+    def test_buffered_writes_are_flushed_after_threshold(self):
+        logs_dir = "lookout_cv_logs_test"
+        shutil.rmtree(logs_dir, ignore_errors=True)
+        try:
+            logger = DetectionLogger("buffered_model", enabled_metrics=[CVMetrics.CONTRAST], logs_dir=logs_dir, buffer_size=2)
+            logger.log_prediction(
+                image=self.np_image,
+                pred_class="cat",
+                confidence=0.95,
+                image_name="test_1.jpg",
+                bbox_x1=10, bbox_y1=20, bbox_x2=100, bbox_y2=120,
+            )
+            self.assertEqual(len(pd.read_parquet(logger.parquet_file)), 0)
+
+            logger.log_prediction(
+                image=self.np_image,
+                pred_class="dog",
+                confidence=0.91,
+                image_name="test_2.jpg",
+                bbox_x1=30, bbox_y1=40, bbox_x2=140, bbox_y2=150,
+            )
+            self.assertEqual(len(pd.read_parquet(logger.parquet_file)), 2)
+        finally:
+            shutil.rmtree(logs_dir, ignore_errors=True)
+
+    def test_data_collection_logger_buffering_and_flush(self):
+        logs_dir = "lookout_cv_logs_test_data"
+        shutil.rmtree(logs_dir, ignore_errors=True)
+        try:
+            logger = DataCollectionLogger("buffered_dataset", enabled_metrics=[CVMetrics.CONTRAST], logs_dir=logs_dir, buffer_size=2)
+            logger.log_image("img_1.jpg", self.np_image)
+            self.assertEqual(len(pd.read_parquet(logger.parquet_file)), 0)
+
+            logger.log_image("img_2.jpg", self.np_image)
+            self.assertEqual(len(pd.read_parquet(logger.parquet_file)), 2)
+
+            logger.flush()
+            self.assertEqual(len(pd.read_parquet(logger.parquet_file)), 2)
+        finally:
+            shutil.rmtree(logs_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

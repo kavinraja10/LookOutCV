@@ -1,16 +1,14 @@
-from enum import Enum, auto
+from enum import Enum
 
 
 class CVMetrics(Enum):
-    def _generate_next_value_(name, start, count, last_values):
-        return name.lower()
-
-    CONTRAST = auto()
-    BLUR = auto()
-    ORIENTATION = auto()
-    BBOX_RATIO = auto()
+    CONTRAST = "contrast"
+    BLUR = "blur"
+    ORIENTATION = "orientation"
+    BBOX_RATIO = "bbox_ratio"
+    BRIGHTNESS = "brightness"
 
     @property
     def requires_image(self) -> bool:
-        """Check if the metric requires an image input."""
-        return self in {self.CONTRAST, self.BLUR, self.ORIENTATION}
+        """Return True for metrics that are computed from image pixels."""
+        return self in {self.CONTRAST, self.BLUR, self.ORIENTATION, self.BRIGHTNESS}

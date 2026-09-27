@@ -13,7 +13,12 @@ class DetectionLogger(BaseLogger):
     _MANDATORY_FIELDS = [
             "image_name", "pred_class", "confidence",
             "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2"]
-    
 
-    def __init__(self, model_name: str, enabled_metrics: Optional[List[CVMetrics]] = None, logs_dir: str = "lookout_cv_logs"):
-        super().__init__(model_name, enabled_metrics, logs_dir)
+    def __init__(
+        self,
+        model_name: str,
+        enabled_metrics: Optional[List[CVMetrics]] = None,
+        logs_dir: str = "lookout_cv_logs",
+        buffer_size: int = 1,
+    ):
+        super().__init__(model_name, enabled_metrics, logs_dir, buffer_size)

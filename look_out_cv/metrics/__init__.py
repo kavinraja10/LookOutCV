@@ -1,7 +1,8 @@
-from .metrics import Additional_Fields, ImageMetricsCalculator, tracking_fields_RGB
+from .data_collection import DataCollectionLogger
+from .metrics import ImageMetricsCalculator, resolve_metric_method_name
 
 __all__ = [
-	"Additional_Fields",
-	"ImageMetricsCalculator",
-	"tracking_fields_RGB",
+    "DataCollectionLogger",
+    "ImageMetricsCalculator",
+    "resolve_metric_method_name",
 ]
