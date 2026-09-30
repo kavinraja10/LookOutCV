@@ -1,3 +1,4 @@
+from .classification_tracker import ClassificationLogger
 from .detection_tracker import DetectionLogger
 from .metrics.data_collection import DataCollectionLogger
 from .metrics_types import CVMetrics
@@ -6,6 +7,7 @@ from .metrics.data_retention import DataRetentionManager, RetentionPolicy
 from .metrics.drift_detection import DriftDetector, DriftTest, DriftReport
 
 __all__ = [
+    "ClassificationLogger",
     "DataCollectionLogger",
     "DetectionLogger",
     "CVMetrics",
