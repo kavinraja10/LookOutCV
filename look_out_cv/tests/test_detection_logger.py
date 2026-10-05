@@ -1,5 +1,6 @@
 import os
 import shutil
+import tempfile
 import unittest
 
 import numpy as np
@@ -14,9 +15,15 @@ from look_out_cv.metrics_types import CVMetrics
 class TestDetectionLogger(unittest.TestCase):
     def setUp(self):
         self.model_name = "test_detection"
-        self.image_path = r'samples\batMan.jpg'
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self.image_path = os.path.join(self._tmp_dir.name, "test_image.jpg")
+        Image.new("RGB", (32, 32), color=(128, 64, 32)).save(self.image_path)
         self.image = Image.open(self.image_path)
         self.np_image = np.array(self.image)
+
+    def tearDown(self):
+        self.image.close()
+        self._tmp_dir.cleanup()
 
     def test_log_prediction_with_path(self):
         logger = DetectionLogger(self.model_name)
