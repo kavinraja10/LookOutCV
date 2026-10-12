@@ -1,5 +1,30 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
-.__pytest_cache__/
-*.pyc
+
+
+# C extensions
+*.so
+
+
+# Virtual environments
+.env
+.venv
+env/
+lookOutCV_venv/
+ENV/
+
+
+# Testing and coverage
 .pytest_cache/
-*venv*/
+
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# LookOutCV generated logs and data
+*lookout_cv_logs/
+*.parquet
+
+# Operating System Files
+.DS_Store
+Thumbs.db
