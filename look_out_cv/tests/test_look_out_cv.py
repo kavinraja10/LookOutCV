@@ -17,6 +17,7 @@ class TestLookOutCV(unittest.TestCase):
             "DriftDetector",
             "DriftTest",
             "DriftReport",
+            "DataInsightsCalculator",
         ]
 
         for component in expected_components:
@@ -38,6 +39,7 @@ class TestLookOutCV(unittest.TestCase):
             "DriftDetector",
             "DriftTest",
             "DriftReport",
+            "DataInsightsCalculator",
         ]
         
         self.assertCountEqual(

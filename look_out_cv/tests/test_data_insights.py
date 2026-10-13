@@ -4,7 +4,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from metrics.data_insights import DataInsightsCalculator
+from look_out_cv.metrics.data_insights import DataInsightsCalculator
 
 @pytest.fixture
 def sample_parquet(tmp_path):

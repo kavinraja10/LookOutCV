@@ -5,6 +5,7 @@ from .metrics_types import CVMetrics
 from .metrics.metrics_rollup import MetricsRollup
 from .metrics.data_retention import DataRetentionManager, RetentionPolicy
 from .metrics.drift_detection import DriftDetector, DriftTest, DriftReport
+from .metrics.data_insights import DataInsightsCalculator
 
 __all__ = [
     "ClassificationLogger",
@@ -17,4 +18,5 @@ __all__ = [
     "DriftDetector",
     "DriftTest",
     "DriftReport",
+    "DataInsightsCalculator",
 ]
