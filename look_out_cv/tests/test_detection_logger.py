@@ -16,6 +16,7 @@ class TestDetectionLogger(unittest.TestCase):
     def setUp(self):
         self.model_name = "test_detection"
         self._tmp_dir = tempfile.TemporaryDirectory()
+        self.logs_dir = os.path.join(self._tmp_dir.name, "logs")
         self.image_path = os.path.join(self._tmp_dir.name, "test_image.jpg")
         Image.new("RGB", (32, 32), color=(128, 64, 32)).save(self.image_path)
         self.image = Image.open(self.image_path)
@@ -26,7 +27,7 @@ class TestDetectionLogger(unittest.TestCase):
         self._tmp_dir.cleanup()
 
     def test_log_prediction_with_path(self):
-        logger = DetectionLogger(self.model_name)
+        logger = DetectionLogger(self.model_name, logs_dir=self.logs_dir)
         result = logger.log_prediction(
             image=self.image_path,
             pred_class="cat",
@@ -37,18 +38,18 @@ class TestDetectionLogger(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_log_prediction_with_np_array(self):
-        logger = DetectionLogger(self.model_name)
+        logger = DetectionLogger(self.model_name, logs_dir=self.logs_dir)
         result = logger.log_prediction(
             image=self.np_image,
             pred_class="dog",
             confidence=0.88,
-             image_name="test_image.jpg",
+            image_name="test_image.jpg",
             bbox_x1=15, bbox_y1=25, bbox_x2=110, bbox_y2=130
         )
         self.assertIsNone(result)
 
     def test_inject_with_optional_fields(self):
-        logger = DetectionLogger(self.model_name, enabled_metrics=[CVMetrics.CONTRAST])
+        logger = DetectionLogger(self.model_name, enabled_metrics=[CVMetrics.CONTRAST], logs_dir=self.logs_dir)
         result = logger.log_prediction(
             image=self.np_image,
             pred_class="batman",

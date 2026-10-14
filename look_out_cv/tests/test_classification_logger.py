@@ -15,6 +15,7 @@ class TestClassificationLogger(unittest.TestCase):
     def setUp(self):
         self.model_name = "test_classification"
         self._tmp_dir = tempfile.TemporaryDirectory()
+        self.logs_dir = os.path.join(self._tmp_dir.name, "logs")
         self.image_path = os.path.join(self._tmp_dir.name, "test_image.jpg")
         Image.new("RGB", (32, 32), color=(128, 64, 32)).save(self.image_path)
         self.image = Image.open(self.image_path)
@@ -25,7 +26,7 @@ class TestClassificationLogger(unittest.TestCase):
         self._tmp_dir.cleanup()
 
     def test_log_prediction_with_path(self):
-        logger = ClassificationLogger(self.model_name)
+        logger = ClassificationLogger(self.model_name, logs_dir=self.logs_dir)
         result = logger.log_prediction(
             image=self.image_path,
             pred_class="cat",
@@ -35,7 +36,7 @@ class TestClassificationLogger(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_log_prediction_with_np_array(self):
-        logger = ClassificationLogger(self.model_name)
+        logger = ClassificationLogger(self.model_name, logs_dir=self.logs_dir)
         result = logger.log_prediction(
             image=self.np_image,
             pred_class="dog",
@@ -45,7 +46,7 @@ class TestClassificationLogger(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_inject_with_optional_fields(self):
-        logger = ClassificationLogger(self.model_name, enabled_metrics=[CVMetrics.CONTRAST])
+        logger = ClassificationLogger(self.model_name, enabled_metrics=[CVMetrics.CONTRAST], logs_dir=self.logs_dir)
         result = logger.log_prediction(
             image=self.np_image,
             pred_class="batman",
