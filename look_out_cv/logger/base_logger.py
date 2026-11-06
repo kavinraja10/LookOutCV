@@ -1,4 +1,10 @@
+"""BaseLogger: append-only, crash-safe segment-based parquet logger."""
+from __future__ import annotations
+
 import os
+import socket
+import time
+import uuid
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
@@ -9,70 +15,92 @@ from look_out_cv.metrics.metrics import ImageMetricsCalculator, resolve_metric_m
 from look_out_cv.metrics_types import CVMetrics
 
 
+_FIELD_TYPES: Dict[str, pa.DataType] = {
+    "ts":        pa.int64(),
+    "row_id":    pa.string(),
+    "device_id": pa.string(),
+    "image_name": pa.string(),
+    "pred_class":  pa.string(),
+    "num_boxes": pa.int32(),
+}
+
+
+def _field_type(name: str) -> pa.DataType:
+    return _FIELD_TYPES.get(name, pa.float32())
+
+
 class BaseLogger:
+    """Segment-based prediction logger (crash-safe, append-only).
+
+    Each call to :meth:`flush` writes ONE new immutable segment file to
+    ``<logs_dir>/<model_name>/``.  Files are named::
+
+        <ms_timestamp>_<pid>_<seq>.parquet
+
+    A ``.tmp`` file is written first, then ``os.replace()`` atomically renames
+    it, so a power cut during a flush never corrupts committed segments.
+
+    Parameters
+    ----------
+    model_name:
+        Logical name of the model being monitored.
+    enabled_metrics:
+        List of :class:`CVMetrics` to compute and store per prediction.
+    logs_dir:
+        Root directory for all model log directories.
+    buffer_size:
+        Number of predictions to buffer before auto-flushing.
+    device_id:
+        Identifier for this device.  Defaults to ``socket.gethostname()``.
+    """
+
+    #: Subclasses must declare the mandatory prediction fields.
+    _MANDATORY_FIELDS: List[str] = []
+
     def __init__(
         self,
         model_name: str,
         enabled_metrics: Optional[List[CVMetrics]] = None,
         logs_dir: str = "lookout_cv_logs",
         buffer_size: int = 1,
+        device_id: Optional[str] = None,
     ) -> None:
-        """Initialize the logger for model monitoring."""
         self.model_name = model_name
         self.enabled_metrics = list(enabled_metrics or [])
         self.logs_dir = logs_dir
         self.buffer_size = max(1, int(buffer_size))
+        self.device_id = device_id or socket.gethostname()
         self._pending_rows: List[Dict[str, Any]] = []
+        self._flush_seq: int = 0
 
         model_dir = os.path.join(self.logs_dir, self.model_name)
         os.makedirs(model_dir, exist_ok=True)
-        self.parquet_file = os.path.join(model_dir, f"{self.model_name}_logs.parquet")
 
-        if os.path.exists(self.parquet_file):
-            self._evolve_schema()
-        else:
-            pq.write_table(
-                pa.Table.from_arrays(
-                    [pa.array([], type=field.type) for field in self._create_schema()],
-                    schema=self._create_schema(),
-                ),
-                self.parquet_file,
-            )
-
-    def __enter__(self):
+    def __enter__(self) -> "BaseLogger":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
         self.flush()
         return False
 
-    def _create_schema(self) -> pa.schema:
-        fields = []
+    def _create_schema(self) -> pa.Schema:
+        fields = [
+            pa.field("ts",        pa.int64()),
+            pa.field("row_id",    pa.string()),
+            pa.field("device_id", pa.string()),
+        ]
         for field_name in self._MANDATORY_FIELDS:
-            dtype = pa.string() if "name" in field_name or "class" in field_name else pa.float32()
-            fields.append(pa.field(field_name, dtype))
+            fields.append(pa.field(field_name, _field_type(field_name)))
         for metric in self.enabled_metrics:
             fields.append(pa.field(metric.value, pa.float32()))
         return pa.schema(fields)
 
-    def _evolve_schema(self):
-        existing_table = pq.read_table(self.parquet_file)
-        existing_columns = set(existing_table.schema.names)
-        missing_columns = set(self._create_schema().names) - existing_columns
-
-        if not missing_columns:
-            return
-
-        for column_name in missing_columns:
-            column = pa.array([None] * existing_table.num_rows, type=pa.float32())
-            existing_table = existing_table.append_column(column_name, column)
-
-        pq.write_table(existing_table, self.parquet_file)
-
     def _resolve_metric_method_name(self, metric: CVMetrics) -> str:
         return resolve_metric_method_name(metric)
 
-    def _compute_metric_value(self, calculator: ImageMetricsCalculator, metric: CVMetrics) -> Optional[float]:
+    def _compute_metric_value(
+        self, calculator: ImageMetricsCalculator, metric: CVMetrics
+    ) -> Optional[float]:
         method_name = self._resolve_metric_method_name(metric)
         try:
             return float(getattr(calculator, method_name)())
@@ -96,9 +124,13 @@ class BaseLogger:
             return None
         return value
 
-    def calculate_image_metrics(self, image: Optional[Union[str, "np.ndarray"]] = None) -> Dict[str, Optional[float]]:
+    def calculate_image_metrics(
+        self, image: Optional[Union[str, "np.ndarray"]] = None
+    ) -> Dict[str, Optional[float]]:
         """Calculate metrics for the provided image."""
-        results = {metric.value: None for metric in self.enabled_metrics}
+        results: Dict[str, Optional[float]] = {
+            metric.value: None for metric in self.enabled_metrics
+        }
         if image is None or not self.enabled_metrics:
             return results
 
@@ -112,8 +144,19 @@ class BaseLogger:
         return results
 
     def log_prediction(self, **kwargs: Any) -> None:
-        """Store one prediction record with the configured image metrics."""
-        data = {}
+        """Store one prediction record with the configured image metrics.
+
+        ``ts`` and ``row_id`` are captured *at call time* so that buffered
+        rows carry the correct capture timestamp even when flushed much later.
+        """
+        ts_now = int(time.time() * 1000)
+        row_id = uuid.uuid4().hex
+
+        data: Dict[str, Any] = {
+            "ts":        ts_now,
+            "row_id":    row_id,
+            "device_id": self.device_id,
+        }
         for field in self._MANDATORY_FIELDS:
             if field not in kwargs:
                 raise ValueError(f"Missing mandatory field: {field}")
@@ -129,27 +172,47 @@ class BaseLogger:
             self.flush()
 
     def flush(self) -> None:
-        """Persist all queued rows to disk."""
+        """Persist all queued rows as a new immutable segment file."""
         if not self._pending_rows:
             return
 
-        try:
-            existing_table = pq.read_table(self.parquet_file)
-            schema = existing_table.schema
-        except Exception as exc:
-            raise IOError(f"Failed to read parquet file: {exc}") from exc
-
+        schema = self._create_schema()
         rows = []
         for row_data in self._pending_rows:
-            values = [row_data.get(name, None) for name in schema.names]
             arrays = [
-                pa.array([self._normalize_field_value(value, field.type)], type=field.type)
-                for field, value in zip(schema, values)
+                pa.array(
+                    [self._normalize_field_value(row_data.get(f.name), f.type)],
+                    type=f.type,
+                )
+                for f in schema
             ]
             rows.append(pa.Table.from_arrays(arrays, schema=schema))
 
-        if rows:
-            combined_table = pa.concat_tables([existing_table, *rows])
-            pq.write_table(combined_table, self.parquet_file)
+        table = pa.concat_tables(rows)
+
+        model_dir = os.path.join(self.logs_dir, self.model_name)
+        ms = time.time_ns() // 1_000_000
+        while True:
+            seg_name = f"{ms:013d}_{os.getpid()}_{self._flush_seq}.parquet"
+            self._flush_seq += 1
+            tmp_path = os.path.join(model_dir, seg_name + ".tmp")
+            final_path = os.path.join(model_dir, seg_name)
+            archived_path = os.path.join(model_dir, "archive", seg_name)
+            if os.path.exists(final_path) or os.path.exists(archived_path):
+                continue
+            try:
+                fd = os.open(tmp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                continue
+            os.close(fd)
+            break
+
+        pq.write_table(table, tmp_path)
+        os.replace(tmp_path, final_path)
 
         self._pending_rows.clear()
+
+    @property
+    def parquet_file(self) -> str:
+        """Return the directory containing this model's log segments."""
+        return os.path.join(self.logs_dir, self.model_name)

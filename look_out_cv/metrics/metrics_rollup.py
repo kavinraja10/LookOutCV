@@ -1,26 +1,44 @@
-"""MetricsRollup: aggregate logged metrics over time windows (row-count based).
+"""MetricsRollup: aggregate logged metrics over time or row-count windows.
 
-Since the parquet logs don't store timestamps, rollup windows are expressed as
-a number of most-recent rows (e.g. the last N predictions).
+Windows may be expressed as:
+- A *row count* (``window_size=N``) — N most-recent rows.
+- A *time string* (``last="24h"``) — rows whose ``ts`` falls within the last N
+  units.  Accepted suffixes: ``s``, ``m``, ``h``, ``d``.
+
+Both may be combined; the intersection is used.
 """
-
 from __future__ import annotations
 
-import glob
-import os
+import time
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
+
+from look_out_cv._utils import read_log, _NON_METRIC_COLS
+
+
+def _parse_duration_ms(spec: str) -> int:
+    """Parse a duration string like '24h', '30m', '90s', '7d' to milliseconds."""
+    spec = spec.strip()
+    units = {"s": 1_000, "m": 60_000, "h": 3_600_000, "d": 86_400_000}
+    suffix = spec[-1].lower()
+    if suffix not in units:
+        raise ValueError(
+            f"Unknown duration suffix '{suffix}'. Use s/m/h/d, e.g. '24h'."
+        )
+    try:
+        value = float(spec[:-1])
+    except ValueError:
+        raise ValueError(f"Invalid duration spec: '{spec}'")
+    return int(value * units[suffix])
 
 
 _AGG_MAP = {
     "mean": np.mean,
-    "std": np.std,
-    "min": np.min,
-    "max": np.max,
+    "std":  np.std,
+    "min":  np.min,
+    "max":  np.max,
     "count": len,
 }
 
@@ -33,13 +51,16 @@ class MetricsRollup:
     model_name:
         Name of the model whose logs should be aggregated.
     window_size:
-        Number of most-recent rows to include in each rollup window.
-        Pass ``None`` to aggregate over all available rows.
+        Number of most-recent rows to include.  ``None`` = all rows.
+    last:
+        Time-based window expressed as a duration string, e.g. ``"24h"``.
+        Rows whose ``ts`` is older than *now − last* are excluded.  ``None``
+        means no time filter.  Old rows without a ``ts`` are excluded when this
+        is set.
     aggregations:
-        List of aggregation names to compute. Supported values:
-        ``"mean"``, ``"std"``, ``"min"``, ``"max"``, ``"count"``.
+        Aggregation names to compute.  Defaults: mean, std, min, max.
     logs_dir:
-        Root directory where the model's parquet log files live.
+        Root directory where model log directories live.
     """
 
     SUPPORTED_AGGREGATIONS: List[str] = list(_AGG_MAP.keys())
@@ -48,11 +69,13 @@ class MetricsRollup:
         self,
         model_name: str,
         window_size: Optional[int] = None,
+        last: Optional[str] = None,
         aggregations: Optional[List[str]] = None,
         logs_dir: str = "lookout_cv_logs",
     ) -> None:
         self.model_name = model_name
         self.window_size = window_size
+        self.last = last
         self.logs_dir = logs_dir
         self.aggregations: List[str] = aggregations or ["mean", "std", "min", "max"]
 
@@ -65,28 +88,13 @@ class MetricsRollup:
 
         self._data: Optional[pd.DataFrame] = None
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _load_data(self) -> pd.DataFrame:
-        """Load all parquet files for the model into a single DataFrame."""
-        pattern = os.path.join(self.logs_dir, self.model_name, "*.parquet")
-        files = glob.glob(pattern)
-        if not files:
-            raise FileNotFoundError(
-                f"No parquet log files found under '{self.logs_dir}/{self.model_name}'."
-            )
-        tables = [pq.read_table(f) for f in files]
-        combined = pa.concat_tables(tables).to_pandas()
-        return combined
+        """Load all segment files and return a combined DataFrame."""
+        return read_log(self.logs_dir, self.model_name).to_pandas()
 
     def _numeric_columns(self, df: pd.DataFrame) -> List[str]:
-        return df.select_dtypes(include=[np.number]).columns.tolist()
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+        cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        return [c for c in cols if c not in _NON_METRIC_COLS]
 
     def load(self) -> "MetricsRollup":
         """Load (or reload) the underlying log data. Returns ``self`` for chaining."""
@@ -102,23 +110,24 @@ class MetricsRollup:
 
     def _window_df(self) -> pd.DataFrame:
         df = self.data
+
+        if self.last is not None and "ts" in df.columns:
+            cutoff = int(time.time() * 1000) - _parse_duration_ms(self.last)
+            ts_col = pd.to_numeric(df["ts"], errors="coerce")
+            df = df[ts_col >= cutoff]
+
         if self.window_size is not None:
             df = df.iloc[-self.window_size:]
+
         return df
 
     def compute(self) -> pd.DataFrame:
-        """Compute rollup statistics for all numeric columns.
+        """Compute rollup statistics for all numeric metric columns.
 
         Returns
         -------
         pd.DataFrame
-            A DataFrame indexed by aggregation name with one column per
-            numeric metric column.
-
-        Example
-        -------
-        >>> rollup = MetricsRollup("my_model", window_size=100)
-        >>> print(rollup.compute())
+            Indexed by aggregation name with one column per numeric metric.
         """
         window = self._window_df()
         numeric_cols = self._numeric_columns(window)
@@ -143,17 +152,9 @@ class MetricsRollup:
         ----------
         step:
             How many rows to advance the window each iteration.
-
-        Returns
-        -------
-        dict
-            Mapping of aggregation name to DataFrame where each row is one
-            window position and columns are numeric metric columns.
         """
         if self.window_size is None:
-            raise ValueError(
-                "``window_size`` must be set to use ``compute_rolling``."
-            )
+            raise ValueError("``window_size`` must be set to use ``compute_rolling``.")
         df = self.data
         numeric_cols = self._numeric_columns(df)
         n = len(df)
@@ -186,7 +187,8 @@ class MetricsRollup:
             return "No numeric metrics found."
         lines = [
             f"MetricsRollup - model='{self.model_name}'"
-            + (f", window={self.window_size}" if self.window_size else ", window=ALL"),
+            + (f", window={self.window_size}" if self.window_size else ", window=ALL")
+            + (f", last={self.last}" if self.last else ""),
             df.to_string(),
         ]
         return "\n".join(lines)

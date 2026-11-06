@@ -6,32 +6,27 @@ statistical tests.
 
 Supported tests
 ---------------
-- PSI  - Population Stability Index (industry standard for ML monitoring).
-- KS   - Kolmogorov-Smirnov two-sample test (via SciPy if available).
-- Z_MEAN - Simple mean-shift z-test for quick sanity checks.
+- PSI  - Population Stability Index
+- KS   - Kolmogorov-Smirnov two-sample test (via SciPy if available)
+- Z_MEAN - Simple mean-shift z-test for quick sanity checks
 """
-
 from __future__ import annotations
 
-import glob
-import os
+import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 
+from look_out_cv._utils import read_log, _NON_METRIC_COLS
+from look_out_cv.metrics.metrics_rollup import _parse_duration_ms
 
-# ---------------------------------------------------------------------------
-# Enums and result types
-# ---------------------------------------------------------------------------
 
 class DriftTest(Enum):
-    PSI = auto()
-    KS = auto()
+    PSI    = auto()
+    KS     = auto()
     Z_MEAN = auto()
 
 
@@ -77,12 +72,12 @@ class DriftReport:
         return pd.DataFrame(
             [
                 {
-                    "column": r.column,
-                    "test": r.test.name,
+                    "column":    r.column,
+                    "test":      r.test.name,
                     "statistic": r.statistic,
                     "threshold": r.threshold,
-                    "drifted": r.drifted,
-                    "p_value": r.p_value,
+                    "drifted":   r.drifted,
+                    "p_value":   r.p_value,
                 }
                 for r in self.results
             ]
@@ -99,17 +94,8 @@ class DriftReport:
         return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Statistical helpers
-# ---------------------------------------------------------------------------
-
 def _psi_score(reference: np.ndarray, current: np.ndarray, bins: int = 10) -> float:
-    """Compute PSI between two 1-D arrays.
-
-    PSI < 0.1  - no significant change
-    PSI 0.1-0.2 - moderate change
-    PSI > 0.2  - significant change / drift
-    """
+    """Compute PSI between two 1-D arrays."""
     min_val = min(reference.min(), current.min())
     max_val = max(reference.max(), current.max())
     if min_val == max_val:
@@ -134,7 +120,6 @@ def _ks_test(reference: np.ndarray, current: np.ndarray) -> Tuple[float, float]:
         stat, p = ks_2samp(reference, current)
         return float(stat), float(p)
     except ImportError:
-        # Fallback: manual KS via empirical CDFs (p-value unavailable)
         ref_sorted = np.sort(reference)
         cur_sorted = np.sort(current)
         all_vals = np.sort(np.concatenate([ref_sorted, cur_sorted]))
@@ -153,10 +138,6 @@ def _z_mean_test(reference: np.ndarray, current: np.ndarray) -> float:
     return float(z)
 
 
-# ---------------------------------------------------------------------------
-# Main detector
-# ---------------------------------------------------------------------------
-
 class DriftDetector:
     """Detect distribution drift in logged CV metrics.
 
@@ -170,22 +151,23 @@ class DriftDetector:
     current_window:
         Number of most-recent rows to treat as the current distribution.
         If ``None``, the second half of available rows is used.
+    current_window_time:
+        Time-based current window, e.g. ``"24h"``.  When set, overrides
+        *current_window* for selecting the current slice.  Old rows without
+        ``ts`` are excluded from the time-filtered slice.
     test:
         Statistical test to use (``PSI``, ``KS``, or ``Z_MEAN``).
     threshold:
-        Decision threshold. Defaults:
-        - PSI    -> 0.2
-        - KS     -> 0.05 (p-value; drift when p < threshold)
-        - Z_MEAN -> 3.0
+        Decision threshold.  Defaults: PSI → 0.2, KS → 0.05, Z_MEAN → 3.0.
     logs_dir:
         Root directory for model logs.
     columns:
-        Subset of numeric columns to monitor. ``None`` = all numeric columns.
+        Subset of numeric columns to monitor.  ``None`` = all numeric columns.
     """
 
     _DEFAULT_THRESHOLDS = {
-        DriftTest.PSI: 0.2,
-        DriftTest.KS: 0.05,
+        DriftTest.PSI:    0.2,
+        DriftTest.KS:     0.05,
         DriftTest.Z_MEAN: 3.0,
     }
 
@@ -194,6 +176,7 @@ class DriftDetector:
         model_name: str,
         reference_window: Optional[int] = None,
         current_window: Optional[int] = None,
+        current_window_time: Optional[str] = None,
         test: DriftTest = DriftTest.PSI,
         threshold: Optional[float] = None,
         logs_dir: str = "lookout_cv_logs",
@@ -202,25 +185,15 @@ class DriftDetector:
         self.model_name = model_name
         self.reference_window = reference_window
         self.current_window = current_window
+        self.current_window_time = current_window_time
         self.test = test
         self.threshold = threshold if threshold is not None else self._DEFAULT_THRESHOLDS[test]
         self.logs_dir = logs_dir
         self.columns = columns
         self._data: Optional[pd.DataFrame] = None
 
-    # ------------------------------------------------------------------
-    # Data loading
-    # ------------------------------------------------------------------
-
     def _load_data(self) -> pd.DataFrame:
-        pattern = os.path.join(self.logs_dir, self.model_name, "*.parquet")
-        files = glob.glob(pattern)
-        if not files:
-            raise FileNotFoundError(
-                f"No parquet log files found under '{self.logs_dir}/{self.model_name}'."
-            )
-        tables = [pq.read_table(f) for f in files]
-        return pa.concat_tables(tables).to_pandas()
+        return read_log(self.logs_dir, self.model_name).to_pandas()
 
     def load(self) -> "DriftDetector":
         """Load (or reload) underlying log data. Returns ``self`` for chaining."""
@@ -234,10 +207,6 @@ class DriftDetector:
         assert self._data is not None
         return self._data
 
-    # ------------------------------------------------------------------
-    # Split helpers
-    # ------------------------------------------------------------------
-
     def _split(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         df = self.data
         n = len(df)
@@ -248,8 +217,23 @@ class DriftDetector:
 
         half = n // 2
         ref_n = self.reference_window if self.reference_window is not None else half
-        cur_n = self.current_window if self.current_window is not None else (n - half)
 
+        if self.current_window_time is not None and "ts" in df.columns:
+            cutoff = int(time.time() * 1000) - _parse_duration_ms(self.current_window_time)
+            ts_col = pd.to_numeric(df["ts"], errors="coerce")
+            current = df[ts_col >= cutoff]
+            reference = df[ts_col < cutoff]
+            if self.reference_window is not None:
+                reference = reference.iloc[-self.reference_window:]
+            if len(reference) < 2 or len(current) < 2:
+                raise ValueError("Need at least 2 rows in reference and current windows.")
+            return reference, current
+        elif self.current_window is not None:
+            current = df.iloc[-self.current_window:]
+        else:
+            current = df.iloc[-(n - half):]
+
+        cur_n = len(current)
         if ref_n + cur_n > n:
             raise ValueError(
                 f"reference_window ({ref_n}) + current_window ({cur_n}) "
@@ -257,11 +241,12 @@ class DriftDetector:
             )
 
         reference = df.iloc[:ref_n]
-        current = df.iloc[-cur_n:]
         return reference, current
 
     def _monitored_columns(self, df: pd.DataFrame) -> List[str]:
         numeric = df.select_dtypes(include=[np.number]).columns.tolist()
+        # Exclude bookkeeping non-metric columns
+        numeric = [c for c in numeric if c not in _NON_METRIC_COLS]
         if self.columns:
             missing = set(self.columns) - set(numeric)
             if missing:
@@ -271,19 +256,8 @@ class DriftDetector:
             return [c for c in self.columns if c in numeric]
         return numeric
 
-    # ------------------------------------------------------------------
-    # Core detection logic
-    # ------------------------------------------------------------------
-
     def detect(self) -> DriftReport:
-        """Run drift detection and return a :class:`DriftReport`.
-
-        Example
-        -------
-        >>> detector = DriftDetector("my_model", test=DriftTest.PSI)
-        >>> report = detector.detect()
-        >>> print(report)
-        """
+        """Run drift detection and return a :class:`DriftReport`."""
         reference, current = self._split()
         cols = self._monitored_columns(reference)
         results: List[ColumnDriftResult] = []

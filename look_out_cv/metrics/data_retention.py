@@ -1,58 +1,81 @@
-"""Data retention management for LookOutCV log files.
+"""Data retention management for LookOutCV segment-based log files.
 
-Provides policies to archive or delete old prediction log rows from parquet
-files, keeping storage usage bounded without losing all historical data.
+Works on *whole immutable segment files* — it never loads or rewrites row data.
+Row counts are read from Parquet metadata (no data scan needed).
 
-Since the logs don't store timestamps, retention is row-count based.
+The row count after retention can be slightly under ``max_rows`` because the
+boundary falls on a segment boundary, not a row boundary.  This is documented
+behaviour.
+
+Retention policies
+------------------
+- ``KEEP_LATEST``      — delete the oldest segments until ≤ max_rows remain.
+- ``ARCHIVE_AND_TRIM`` — move excess segments to ``<model>/archive/``.
+
+The *archive* is the ``<model>/archive/`` sub-directory.  :meth:`read_log`
+(and therefore rollup / drift / insights) ignores the archive sub-directory by
+design.
 """
-
 from __future__ import annotations
 
 import glob
 import os
+import shutil
 from enum import Enum, auto
 from typing import List, Optional
 
-import pyarrow as pa
 import pyarrow.parquet as pq
+
+from look_out_cv._utils import _live_segments as _get_live_segments
 
 
 class RetentionPolicy(Enum):
     """Available retention policies."""
 
     KEEP_LATEST = auto()
-    """Keep only the N most-recent rows; discard the rest."""
+    """Keep only the N most-recent rows (whole segments); discard older ones."""
 
     ARCHIVE_AND_TRIM = auto()
-    """Move excess rows to a separate archive parquet file, then trim the live log."""
+    """Move excess segments to ``<model>/archive/`` instead of deleting them."""
 
 
 class DataRetentionManager:
-    """Manage the size of parquet log files by applying a retention policy.
+    """Manage the size of parquet log directories by applying a retention policy.
 
     Parameters
     ----------
     model_name:
         Name of the model whose logs should be managed.
     max_rows:
-        Maximum number of rows to keep in the live log file.
+        Maximum number of rows to keep in the live log directory.
+        Because retention works on whole segments, the actual row count after
+        a trim may be slightly under ``max_rows``.
     policy:
-        ``RetentionPolicy.KEEP_LATEST`` (default) - excess rows are deleted.
-        ``RetentionPolicy.ARCHIVE_AND_TRIM`` - excess rows are appended to an
-        archive parquet file before being removed from the live log.
+        ``RetentionPolicy.KEEP_LATEST`` (default) — excess segments are deleted.
+        ``RetentionPolicy.ARCHIVE_AND_TRIM`` — excess segments are moved to
+        ``<model>/archive/``.
     logs_dir:
-        Root directory where the model's log parquet files live.
-    archive_suffix:
-        Filename suffix for archive parquet files when using
-        ``ARCHIVE_AND_TRIM``.
+        Root directory where the model's log directories live.
+    max_bytes:
+        Optional additional constraint.  When set, oldest segments are also
+        removed until the total size of live segments is ≤ ``max_bytes``.
+        Applied *after* the ``max_rows`` constraint.
+
+    Note
+    ----
+    ``read_log`` loads the retained log into RAM. On edge devices (such as a
+    1 GB Raspberry Pi 3), an unbounded log cannot fit in memory, so retention
+    must actually be run periodically. Retention is not auto-run inside the
+    logger.
     """
 
     def __init__(
         self,
         model_name: str,
-        max_rows: int,
+        max_rows: int = 100_000,
         policy: RetentionPolicy = RetentionPolicy.KEEP_LATEST,
         logs_dir: str = "lookout_cv_logs",
+        max_bytes: Optional[int] = None,
         archive_suffix: str = "_archive",
     ) -> None:
         if max_rows < 1:
@@ -62,43 +85,38 @@ class DataRetentionManager:
         self.max_rows = max_rows
         self.policy = policy
         self.logs_dir = logs_dir
-        self.archive_suffix = archive_suffix
+        self.max_bytes = max_bytes
 
         self._model_dir = os.path.join(logs_dir, model_name)
+        self._archive_dir = os.path.join(self._model_dir, "archive")
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    def _live_segments(self) -> List[str]:
+        """Return all live (non-archive, non-tmp) segment files, sorted."""
+        return _get_live_segments(self._model_dir)
 
-    def _find_live_files(self) -> List[str]:
-        """Return all non-archive parquet files for this model."""
-        all_files = glob.glob(os.path.join(self._model_dir, "*.parquet"))
-        archive_name = self._archive_path()
-        return [f for f in all_files if os.path.abspath(f) != os.path.abspath(archive_name)]
+    @staticmethod
+    def _segment_row_count(path: str) -> int:
+        """Read row count from Parquet metadata — no data loaded."""
+        return pq.ParquetFile(path).metadata.num_rows
 
-    def _archive_path(self) -> str:
-        return os.path.join(
-            self._model_dir,
-            f"{self.model_name}_logs{self.archive_suffix}.parquet",
-        )
+    @staticmethod
+    def _segment_bytes(path: str) -> int:
+        return os.path.getsize(path)
 
-    def _read_combined(self, files: List[str]) -> pa.Table:
-        if not files:
-            raise FileNotFoundError(
-                f"No parquet log files found in '{self._model_dir}'."
-            )
-        return pa.concat_tables([pq.read_table(f) for f in files])
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def _dispose(self, path: str) -> None:
+        """Delete or archive a segment according to ``self.policy``."""
+        if self.policy == RetentionPolicy.ARCHIVE_AND_TRIM:
+            os.makedirs(self._archive_dir, exist_ok=True)
+            shutil.move(path, os.path.join(self._archive_dir, os.path.basename(path)))
+        else:
+            os.remove(path)
 
     def current_row_count(self) -> int:
         """Return the total number of rows currently in the live log."""
-        files = self._find_live_files()
-        if not files:
-            return 0
-        return self._read_combined(files).num_rows
+        total = 0
+        for f in self._live_segments():
+            total += self._segment_row_count(f)
+        return total
 
     def apply(self) -> dict:
         """Apply the configured retention policy.
@@ -109,72 +127,107 @@ class DataRetentionManager:
             Summary with keys: ``rows_before``, ``rows_after``,
             ``rows_removed``, ``rows_archived``, ``policy``.
         """
-        files = self._find_live_files()
-        if not files:
+        segments = self._live_segments()
+        if not segments:
             raise FileNotFoundError(
-                f"No parquet log files found in '{self._model_dir}'."
+                f"No parquet segment files found in '{self._model_dir}'."
             )
 
-        table = self._read_combined(files)
-        rows_before = table.num_rows
+        counts = [self._segment_row_count(f) for f in segments]
+        rows_before = sum(counts)
 
         if rows_before <= self.max_rows:
+            rows_archived = 0
+            rows_removed = 0
+            if self.max_bytes is not None:
+                ar, rr = self._apply_max_bytes(segments, counts)
+                rows_archived += ar
+                rows_removed += rr
+            rows_after = self.current_row_count()
             return {
-                "rows_before": rows_before,
-                "rows_after": rows_before,
-                "rows_removed": 0,
-                "rows_archived": 0,
+                "rows_before":  rows_before,
+                "rows_after":   rows_after,
+                "rows_removed": rows_removed,
+                "rows_archived": rows_archived,
                 "policy": self.policy.name,
             }
 
-        excess = rows_before - self.max_rows
-        rows_to_archive = table.slice(0, excess)   # oldest
-        rows_to_keep = table.slice(excess)          # newest
-
         rows_archived = 0
-        if self.policy == RetentionPolicy.ARCHIVE_AND_TRIM:
-            archive_path = self._archive_path()
-            os.makedirs(os.path.dirname(archive_path), exist_ok=True)
-            if os.path.exists(archive_path):
-                existing_archive = pq.read_table(archive_path)
-                rows_to_archive = pa.concat_tables([existing_archive, rows_to_archive])
-            pq.write_table(rows_to_archive, archive_path)
-            rows_archived = excess
+        rows_removed = 0
+        running_total = rows_before
 
-        # Write back trimmed live log
-        primary_file = os.path.join(
-            self._model_dir, f"{self.model_name}_logs.parquet"
-        )
-        pq.write_table(rows_to_keep, primary_file)
+        i = 0
+        while i < len(segments) and running_total > self.max_rows:
+            seg, cnt = segments[i], counts[i]
+            self._dispose(seg)
+            running_total -= cnt
+            if self.policy == RetentionPolicy.ARCHIVE_AND_TRIM:
+                rows_archived += cnt
+            else:
+                rows_removed += cnt
+            i += 1
 
-        # Remove any secondary live files that were consolidated
-        for f in files:
-            if os.path.abspath(f) != os.path.abspath(primary_file):
-                os.remove(f)
+        remaining_segs = segments[i:]
+        remaining_counts = counts[i:]
+        if self.max_bytes is not None:
+            ar, rr = self._apply_max_bytes(remaining_segs, remaining_counts)
+            rows_archived += ar
+            rows_removed += rr
+
+        rows_after = self.current_row_count()
 
         return {
-            "rows_before": rows_before,
-            "rows_after": rows_to_keep.num_rows,
-            "rows_removed": excess,
+            "rows_before":   rows_before,
+            "rows_after":    rows_after,
+            "rows_removed":  rows_removed,
             "rows_archived": rows_archived,
-            "policy": self.policy.name,
+            "policy":        self.policy.name,
         }
 
+    def _apply_max_bytes(
+        self, segments: List[str], counts: List[int]
+    ) -> tuple:
+        """Trim oldest segments until total bytes ≤ max_bytes.
+
+        Returns (rows_archived, rows_removed) for the disposed segments.
+        """
+        assert self.max_bytes is not None
+        rows_archived = rows_removed = 0
+        total_bytes = sum(self._segment_bytes(f) for f in segments)
+        i = 0
+        while i < len(segments) and total_bytes > self.max_bytes:
+            seg = segments[i]
+            total_bytes -= self._segment_bytes(seg)
+            self._dispose(seg)
+            if self.policy == RetentionPolicy.ARCHIVE_AND_TRIM:
+                rows_archived += counts[i]
+            else:
+                rows_removed += counts[i]
+            i += 1
+        return rows_archived, rows_removed
+
     def purge_archive(self) -> bool:
-        """Delete the archive parquet file if it exists. Returns True if deleted."""
-        path = self._archive_path()
-        if os.path.exists(path):
-            os.remove(path)
-            return True
-        return False
+        """Delete all files in the archive directory. Returns True if any deleted."""
+        if not os.path.isdir(self._archive_dir):
+            return False
+        files = glob.glob(os.path.join(self._archive_dir, "*.parquet"))
+        if not files:
+            return False
+        for f in files:
+            os.remove(f)
+        return True
 
     def archive_exists(self) -> bool:
-        """Return True if an archive file exists for this model."""
-        return os.path.exists(self._archive_path())
+        """Return True if the archive directory contains at least one parquet file."""
+        if not os.path.isdir(self._archive_dir):
+            return False
+        return bool(glob.glob(os.path.join(self._archive_dir, "*.parquet")))
 
     def archive_row_count(self) -> int:
-        """Return the number of rows in the archive file (0 if none exists)."""
-        path = self._archive_path()
-        if not os.path.exists(path):
+        """Return the total number of rows in the archive directory (0 if empty)."""
+        if not os.path.isdir(self._archive_dir):
             return 0
-        return pq.read_table(path).num_rows
+        total = 0
+        for f in glob.glob(os.path.join(self._archive_dir, "*.parquet")):
+            total += self._segment_row_count(f)
+        return total

@@ -1,5 +1,7 @@
+"""Tests for DetectionLogger and DataCollectionLogger."""
+from __future__ import annotations
+
 import os
-import shutil
 import tempfile
 import unittest
 
@@ -33,7 +35,7 @@ class TestDetectionLogger(unittest.TestCase):
             pred_class="cat",
             confidence=0.95,
             image_name="test_image.jpg",
-            bbox_x1=10, bbox_y1=20, bbox_x2=100, bbox_y2=120
+            bbox_x1=10, bbox_y1=20, bbox_x2=100, bbox_y2=120,
         )
         self.assertIsNone(result)
 
@@ -44,12 +46,16 @@ class TestDetectionLogger(unittest.TestCase):
             pred_class="dog",
             confidence=0.88,
             image_name="test_image.jpg",
-            bbox_x1=15, bbox_y1=25, bbox_x2=110, bbox_y2=130
+            bbox_x1=15, bbox_y1=25, bbox_x2=110, bbox_y2=130,
         )
         self.assertIsNone(result)
 
     def test_inject_with_optional_fields(self):
-        logger = DetectionLogger(self.model_name, enabled_metrics=[CVMetrics.CONTRAST], logs_dir=self.logs_dir)
+        logger = DetectionLogger(
+            self.model_name,
+            enabled_metrics=[CVMetrics.CONTRAST],
+            logs_dir=self.logs_dir,
+        )
         result = logger.log_prediction(
             image=self.np_image,
             pred_class="batman",
@@ -60,45 +66,51 @@ class TestDetectionLogger(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_buffered_writes_are_flushed_after_threshold(self):
-        logs_dir = "lookout_cv_logs_test"
-        shutil.rmtree(logs_dir, ignore_errors=True)
-        try:
-            logger = DetectionLogger("buffered_model", enabled_metrics=[CVMetrics.CONTRAST], logs_dir=logs_dir, buffer_size=2)
-            logger.log_prediction(
-                image=self.np_image,
-                pred_class="cat",
-                confidence=0.95,
-                image_name="test_1.jpg",
-                bbox_x1=10, bbox_y1=20, bbox_x2=100, bbox_y2=120,
-            )
-            self.assertEqual(len(pd.read_parquet(logger.parquet_file)), 0)
+        """Buffer flushes to disk when the threshold is reached."""
+        logs_dir = os.path.join(self._tmp_dir.name, "buffered_logs")
+        logger = DetectionLogger(
+            "buffered_model",
+            enabled_metrics=[CVMetrics.CONTRAST],
+            logs_dir=logs_dir,
+            buffer_size=2,
+        )
+        logger.log_prediction(
+            image=self.np_image,
+            pred_class="cat",
+            confidence=0.95,
+            image_name="test_1.jpg",
+            bbox_x1=10, bbox_y1=20, bbox_x2=100, bbox_y2=120,
+        )
+        # Only 1 row buffered — nothing on disk yet
+        self.assertEqual(len(logger._pending_rows), 1)
 
-            logger.log_prediction(
-                image=self.np_image,
-                pred_class="dog",
-                confidence=0.91,
-                image_name="test_2.jpg",
-                bbox_x1=30, bbox_y1=40, bbox_x2=140, bbox_y2=150,
-            )
-            self.assertEqual(len(pd.read_parquet(logger.parquet_file)), 2)
-        finally:
-            shutil.rmtree(logs_dir, ignore_errors=True)
+        logger.log_prediction(
+            image=self.np_image,
+            pred_class="dog",
+            confidence=0.91,
+            image_name="test_2.jpg",
+            bbox_x1=30, bbox_y1=40, bbox_x2=140, bbox_y2=150,
+        )
+        # Buffer hit threshold — flushed to disk
+        self.assertEqual(len(pd.read_parquet(logger.parquet_file)), 2)
 
     def test_data_collection_logger_buffering_and_flush(self):
-        logs_dir = "lookout_cv_logs_test_data"
-        shutil.rmtree(logs_dir, ignore_errors=True)
-        try:
-            logger = DataCollectionLogger("buffered_dataset", enabled_metrics=[CVMetrics.CONTRAST], logs_dir=logs_dir, buffer_size=2)
-            logger.log_image("img_1.jpg", self.np_image)
-            self.assertEqual(len(pd.read_parquet(logger.parquet_file)), 0)
+        """DataCollectionLogger buffers and flushes correctly."""
+        logs_dir = os.path.join(self._tmp_dir.name, "data_logs")
+        logger = DataCollectionLogger(
+            "buffered_dataset",
+            enabled_metrics=[CVMetrics.CONTRAST],
+            logs_dir=logs_dir,
+            buffer_size=2,
+        )
+        logger.log_image("img_1.jpg", self.np_image)
+        self.assertEqual(len(logger._pending_rows), 1)
 
-            logger.log_image("img_2.jpg", self.np_image)
-            self.assertEqual(len(pd.read_parquet(logger.parquet_file)), 2)
+        logger.log_image("img_2.jpg", self.np_image)
+        self.assertEqual(len(logger._pending_rows), 0)  # auto-flushed
 
-            logger.flush()
-            self.assertEqual(len(pd.read_parquet(logger.parquet_file)), 2)
-        finally:
-            shutil.rmtree(logs_dir, ignore_errors=True)
+        logger.flush()  # no-op
+        self.assertEqual(len(pd.read_parquet(logger.parquet_file)), 2)
 
 
 if __name__ == "__main__":
